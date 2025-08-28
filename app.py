@@ -1,3 +1,4 @@
+# app.py
 import os
 import re
 import requests
@@ -6,13 +7,10 @@ import streamlit as st
 from dotenv import load_dotenv
 
 # ---------- setup ----------
-# Load API key from .env
 load_dotenv()
 API_KEY = os.getenv("OPENWEATHER_API_KEY")
 
-# Basic page config
 st.set_page_config(page_title="Weather Viewer", page_icon="⛅", layout="centered")
-
 st.title("⛅ Simple Weather App")
 st.write("Enter a city, then click **Get Weather**.")
 
@@ -20,40 +18,64 @@ st.write("Enter a city, then click **Get Weather**.")
 city = st.text_input("City name", placeholder="e.g., Durham, London, Cairo")
 get_weather = st.button("Get Weather")
 
-# ---------- helper: call OpenWeather ----------
-def fetch_weather(city_name: str):
-    """Return dict with weather data or None on error."""
-    base_url = "https://api.openweathermap.org/data/2.5/weather"
-    params = {
-        "q": city_name,
-        "appid": API_KEY,
-        "units": "metric"  # change to 'imperial' for °F
-    }
+# ---------- helpers ----------
+OPENWEATHER_URL = "https://api.openweathermap.org/data/2.5/weather"
+
+def fetch_openweather(city_name: str):
+    """Return (data_dict, err_str) from OpenWeather."""
+    params = {"q": city_name, "appid": API_KEY, "units": "metric"}
     try:
-        resp = requests.get(base_url, params=params, timeout=10)
-        if resp.status_code != 200:
-            return None, f"API error ({resp.status_code}): {resp.text}"
-        return resp.json(), None
+        r = requests.get(OPENWEATHER_URL, params=params, timeout=10)
+        if r.status_code != 200:
+            return None, f"API error ({r.status_code}): {r.text}"
+        return r.json(), None
     except requests.RequestException as e:
         return None, f"Network error: {e}"
 
-# ---------- main action ----------
+def fetch_wttr(city_name: str):
+    """Keyless fallback using wttr.in. Returns normalized dict like OpenWeather."""
+    try:
+        r = requests.get(f"https://wttr.in/{city_name}?format=j1", timeout=10)
+        r.raise_for_status()
+        j = r.json()
+        cur = j["current_condition"][0]
+        return {
+            "name": city_name.title(),
+            "sys": {"country": ""},
+            "main": {
+                "temp": float(cur["temp_C"]),
+                "feels_like": float(cur.get("FeelsLikeC", cur["temp_C"])),
+                "humidity": int(cur["humidity"]),
+            },
+            "wind": {"speed": float(cur.get("windspeedKmph", 0)) / 3.6},  # km/h -> m/s
+            "weather": [{"description": cur["weatherDesc"][0]["value"]}],
+        }, None
+    except Exception as e:
+        return None, f"Fallback error: {e}"
+
+# ---------- main ----------
 if get_weather:
-    # Guardrails
-    if not API_KEY:
-        st.error("Missing API key. Put it in a `.env` file as OPENWEATHER_API_KEY.")
-    elif not city.strip():
+    if not city.strip():
         st.warning("Please enter a city.")
     else:
-        with st.spinner("Fetching weather..."):
-            data, err = fetch_weather(city.strip())
+        data = None
+        err = None
+        source = None
 
-        if err:
-            st.error(err)
-        elif not data:
-            st.error("No data returned.")
+        with st.spinner("Fetching weather..."):
+            if API_KEY:  # try OpenWeather first
+                data, err = fetch_openweather(city.strip())
+                source = "OpenWeather"
+                if err or not data:  # fall back
+                    data, err = fetch_wttr(city.strip())
+                    source = "wttr.in (fallback)"
+            else:  # no key -> fallback
+                data, err = fetch_wttr(city.strip())
+                source = "wttr.in (fallback)"
+
+        if err or not data:
+            st.error(err or "No data returned.")
         else:
-            # Pull useful bits
             name = data.get("name", city.title())
             sys = data.get("sys", {})
             country = sys.get("country", "")
@@ -62,7 +84,7 @@ if get_weather:
             weather_list = data.get("weather", [])
             description_raw = weather_list[0]["description"] if weather_list else "N/A"
 
-            # Tiny regex cleanup example (remove non-letters, title case)
+            # clean description a bit
             description_clean = re.sub(r"[^a-zA-Z\s]", "", description_raw).strip().title()
 
             temp = main.get("temp")
@@ -70,7 +92,7 @@ if get_weather:
             humidity = main.get("humidity")
             wind_speed = wind.get("speed")
 
-            # Emoji hint based on description
+            # emoji hint
             emoji = "☀️"
             desc_low = description_clean.lower()
             if "cloud" in desc_low: emoji = "☁️"
@@ -82,7 +104,6 @@ if get_weather:
             st.subheader(f"Weather in {name}, {country} {emoji}")
             st.write(f"**Condition:** {description_clean}")
 
-            # Show metrics in a small table and chart
             df = pd.DataFrame(
                 {
                     "Metric": ["Temperature (°C)", "Feels Like (°C)", "Humidity (%)", "Wind (m/s)"],
@@ -90,10 +111,6 @@ if get_weather:
                 }
             )
             st.dataframe(df, use_container_width=True)
+            st.bar_chart(df.set_index("Metric"))
 
-            # Simple bar chart of the numeric metrics
-            chart_df = df.set_index("Metric")
-            st.bar_chart(chart_df)
-
-            # Little footer
-            st.caption("Data: OpenWeather • Units: metric • You can change to 'imperial' in the code if you prefer °F.")
+            st.caption(f"Data source: {source} • Units: metric")
