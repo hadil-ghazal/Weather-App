@@ -12,7 +12,7 @@ On bash type the following:
       4)    source .venv/bin/activate
 4) pip install -r requirements.txt
 5) Streamlit App Launch
-    1) export OPENWEATHER_API_KEY="INSERT_KEY"
-    2) streamlit run app.py
+    1) streamlit run app.py
+
 
 
